@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Django
+*.log
+*.pot
+*.pyc
+db.sqlite3
+db.sqlite3-journal
+/media
+/staticfiles
+*.local.py
+
+# Environment variables
+.env
+.env.local
+
+# Private keys and certificates (NEVER commit these!)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa
+id_rsa.pub
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Model files (optional - uncomment if you don't want to track models)
+# *.pt
+# *.pth
+# *.onnx
+
+# Data
+data/
+*.mp4
+*.avi
+*.mov
+
+# Conda
+.conda/
+
