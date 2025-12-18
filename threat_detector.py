@@ -1,106 +1,206 @@
 """
-threat_detector.py - Simplified After-Hours Threat Classifier
-Replaces complex anomaly_detector.py with focused 3-level threat system
+threat_detector.py - Backend-Driven Threat Classifier
+Uses detection rules from Django backend instead of hardcoded logic.
 
-THREAT LEVELS:
-- HIGH: Person detected after hours → ALERT
-- MEDIUM: Vehicle or suspicious object after hours → ALERT  
-- LOW: Animal detected → LOG ONLY (no alert)
+THREAT LEVELS (from backend):
+- HIGH: Always alert
+- MEDIUM: Alert (lower priority)
+- LOW: Log only
+- IGNORE: Discard completely
 """
 
 import json
 from datetime import datetime, time
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pathlib import Path
+import pytz
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class ThreatDetector:
-    """Simplified threat detection focused on after-hours activity"""
+    """
+    Threat detection using backend-driven configuration.
+    No hardcoded rules - all detection behavior comes from Django API.
+    """
     
-    def __init__(self, after_hours_start: int = 22, after_hours_end: int = 6):
+    def __init__(self, detection_config: Optional[Dict] = None):
         """
-        Initialize threat detector
+        Initialize threat detector with backend config.
         
         Args:
-            after_hours_start: Hour when after-hours begins (24hr format, default 22 = 10 PM)
-            after_hours_end: Hour when after-hours ends (24hr format, default 6 = 6 AM)
+            detection_config: Detection config dict from Django API
+                {
+                    'monitor_mode': 'after_hours' | 'always' | 'custom',
+                    'active_hours_start': 'HH:MM:SS',
+                    'active_hours_end': 'HH:MM:SS',
+                    'timezone': 'America/New_York' | 'UTC' | etc,
+                    'confidence_threshold': 0.6,
+                    'frame_skip': 30,
+                    'rules': [
+                        {
+                            'object_class': 'person',
+                            'threat_level': 'HIGH',
+                            'should_alert': True,
+                            'min_confidence': 0.7
+                        },
+                        ...
+                    ]
+                }
         """
-        self.after_hours_start = after_hours_start
-        self.after_hours_end = after_hours_end
-        
-        # Threat classification rules
-        self.threat_classes = {
-            'HIGH': ['person'],
-            'MEDIUM': ['car', 'truck', 'bus', 'motorcycle', 'bicycle', 
-                      'backpack', 'suitcase', 'handbag'],
-            'LOW': ['dog', 'cat', 'bird', 'horse']
+        self.config = detection_config or self._get_default_config()
+        self._parse_config()
+    
+    def _get_default_config(self) -> Dict:
+        """Get safe default config if backend is unreachable."""
+        return {
+            'monitor_mode': 'after_hours',
+            'active_hours_start': '09:00:00',
+            'active_hours_end': '17:00:00',
+            'timezone': 'UTC',
+            'confidence_threshold': 0.6,
+            'frame_skip': 30,
+            'rules': [],
         }
     
-    def is_after_hours(self, frame_datetime: datetime) -> bool:
+    def _parse_config(self):
+        """Parse config into usable format."""
+        # Parse time strings
+        self.active_hours_start = datetime.strptime(
+            self.config.get('active_hours_start', '09:00:00'), 
+            '%H:%M:%S'
+        ).time()
+        self.active_hours_end = datetime.strptime(
+            self.config.get('active_hours_end', '17:00:00'), 
+            '%H:%M:%S'
+        ).time()
+        
+        self.monitor_mode = self.config.get('monitor_mode', 'after_hours')
+        self.timezone_str = self.config.get('timezone', 'UTC')
+        self.confidence_threshold = self.config.get('confidence_threshold', 0.6)
+        self.frame_skip = self.config.get('frame_skip', 30)
+        
+        # Build rule lookup: {object_class: rule_dict}
+        self.rules: Dict[str, Dict] = {}
+        for rule in self.config.get('rules', []):
+            obj_class = rule.get('object_class')
+            if obj_class:
+                self.rules[obj_class] = {
+                    'threat_level': rule.get('threat_level', 'LOW'),
+                    'should_alert': rule.get('should_alert', False),
+                    'min_confidence': rule.get('min_confidence') or self.confidence_threshold,
+                }
+        
+        logger.info(f"ThreatDetector initialized: mode={self.monitor_mode}, "
+                   f"rules={len(self.rules)}, threshold={self.confidence_threshold}")
+    
+    def update_config(self, new_config: Dict):
+        """Update detection config (called when backend config changes)."""
+        self.config = new_config
+        self._parse_config()
+        logger.info("ThreatDetector config updated")
+    
+    def should_process_frame(self, frame_datetime: datetime) -> bool:
         """
-        Check if timestamp falls within after-hours period
+        Check if frame should be processed based on monitor mode and time.
         
         Args:
-            frame_datetime: Datetime object for frame
+            frame_datetime: Datetime object for frame (assumed to be in camera timezone)
             
         Returns:
-            True if after hours, False otherwise
+            True if frame should be processed, False otherwise
         """
-        hour = frame_datetime.hour
+        if self.monitor_mode == 'always':
+            return True
         
-        # Handle overnight period (e.g., 22:00 - 06:00)
-        if self.after_hours_start > self.after_hours_end:
-            return hour >= self.after_hours_start or hour < self.after_hours_end
-        else:
-            return self.after_hours_start <= hour < self.after_hours_end
+        # Get current time in camera timezone
+        try:
+            tz = pytz.timezone(self.timezone_str)
+            if frame_datetime.tzinfo is None:
+                # Assume UTC if no timezone info
+                frame_datetime = pytz.utc.localize(frame_datetime)
+            local_time = frame_datetime.astimezone(tz).time()
+        except Exception as e:
+            logger.warning(f"Timezone conversion error: {e}, using UTC")
+            local_time = frame_datetime.time()
+        
+        current_time = local_time
+        
+        if self.monitor_mode == 'after_hours':
+            # Process only outside active hours
+            if self.active_hours_start < self.active_hours_end:
+                # Normal case: 09:00 - 17:00
+                return not (self.active_hours_start <= current_time < self.active_hours_end)
+            else:
+                # Overnight case: e.g., 17:00 - 09:00
+                return not (current_time >= self.active_hours_start or current_time < self.active_hours_end)
+        
+        elif self.monitor_mode == 'custom':
+            # For now, same as after_hours (can be extended for multiple windows)
+            if self.active_hours_start < self.active_hours_end:
+                return not (self.active_hours_start <= current_time < self.active_hours_end)
+            else:
+                return not (current_time >= self.active_hours_start or current_time < self.active_hours_end)
+        
+        return True
     
-    def classify_threat(self, detected_class: str) -> Dict[str, Any]:
+    def classify_threat(self, detected_class: str, confidence: float) -> Dict[str, Any]:
         """
-        Classify a detected object into threat level
+        Classify a detected object using backend-driven rules.
         
         Args:
             detected_class: YOLO class name (e.g., 'person', 'car', 'dog')
+            confidence: Detection confidence (0.0-1.0)
             
         Returns:
             Dict with threat level, alert flag, and reason
         """
-        # Check HIGH threats
-        if detected_class in self.threat_classes['HIGH']:
-            return {
-                'level': 'HIGH',
-                'alert': True,
-                'reason': f'{detected_class.title()} detected after hours'
-            }
+        # Check if we have a rule for this object class
+        rule = self.rules.get(detected_class)
         
-        # Check MEDIUM threats
-        if detected_class in self.threat_classes['MEDIUM']:
+        if not rule:
+            # No rule defined - treat as IGNORE (don't alert)
             return {
-                'level': 'MEDIUM',
-                'alert': True,
-                'reason': f'{detected_class.title()} detected after hours'
-            }
-        
-        # Check LOW threats
-        if detected_class in self.threat_classes['LOW']:
-            return {
-                'level': 'LOW',
+                'level': 'IGNORE',
                 'alert': False,
-                'reason': f'{detected_class.title()} detected (likely false alarm)'
+                'reason': f'{detected_class.title()} not configured for detection'
             }
         
-        # Unknown object - treat as LOW by default
+        # Check confidence threshold
+        min_conf = rule.get('min_confidence', self.confidence_threshold)
+        if confidence < min_conf:
+            return {
+                'level': rule['threat_level'],
+                'alert': False,
+                'reason': f'{detected_class.title()} detected but confidence ({confidence:.2f}) below threshold ({min_conf:.2f})'
+            }
+        
+        threat_level = rule.get('threat_level', 'LOW')
+        should_alert = rule.get('should_alert', False)
+        
+        # Map threat levels to alert behavior
+        if threat_level == 'IGNORE':
+            should_alert = False
+        elif threat_level == 'HIGH':
+            should_alert = True
+        elif threat_level == 'MEDIUM':
+            should_alert = should_alert  # Use rule setting
+        elif threat_level == 'LOW':
+            should_alert = False  # LOW never alerts
+        
         return {
-            'level': 'LOW',
-            'alert': False,
-            'reason': f'Unknown object ({detected_class}) detected'
+            'level': threat_level,
+            'alert': should_alert,
+            'reason': f'{detected_class.title()} detected ({threat_level} threat)'
         }
     
     def analyze_detections(self, detection_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Analyze detection results and generate threat reports
+        Analyze detection results using backend-driven rules.
         
         Args:
-            detection_results: List of detection dictionaries from detect_objects.py
+            detection_results: List of detection dictionaries
                 Each dict should have: frame_number, timestamp, detections[]
         
         Returns:
@@ -113,12 +213,13 @@ class ThreatDetector:
             frame_datetime = result.get('timestamp')
             detections = result.get('detections', [])
             
-            # Skip if no timestamp or not after hours
+            # Skip if no timestamp
             if not frame_datetime:
                 continue
             
-            if not self.is_after_hours(frame_datetime):
-                continue  # Should already be filtered, but double-check
+            # Check if frame should be processed based on monitor mode
+            if not self.should_process_frame(frame_datetime):
+                continue  # Skip business hours if in after_hours mode
             
             # Process each detected object in this frame
             for detection in detections:
@@ -129,14 +230,18 @@ class ThreatDetector:
                 if not detected_class:
                     continue
                 
-                # Classify threat
-                threat_info = self.classify_threat(detected_class)
+                # Classify threat using backend rules
+                threat_info = self.classify_threat(detected_class, confidence)
+                
+                # Skip IGNORE level threats
+                if threat_info['level'] == 'IGNORE':
+                    continue
                 
                 # Build threat record
                 threat = {
                     'frame_number': frame_number,
-                    'timestamp': frame_datetime.isoformat(),
-                    'time_str': frame_datetime.strftime('%I:%M:%S %p'),
+                    'timestamp': frame_datetime.isoformat() if isinstance(frame_datetime, datetime) else str(frame_datetime),
+                    'time_str': frame_datetime.strftime('%I:%M:%S %p') if isinstance(frame_datetime, datetime) else str(frame_datetime),
                     'detected_class': detected_class,
                     'confidence': round(confidence, 2),
                     'bbox': bbox,

@@ -36,42 +36,14 @@ A complete cloud-based CCTV analytics platform with Django backend and standalon
 - Django 4.2+
 - Access to RTSP camera streams
 
-### 1. Django Backend Setup
+### 1. Backend Setup
 
-```bash
-# Navigate to Django project
-cd surveillance_backend
+The pipeline connects to a Django backend service via HTTP API. Ensure your backend is running and accessible. The backend should provide these endpoints:
 
-# Create virtual environment (optional but recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+- `GET /api/active-cameras/` - Returns active cameras with detection configs
+- `POST /api/send-alert/` - Accepts alerts from the pipeline
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Copy environment file
-cp .env.example .env
-# Edit .env and set your SECRET_KEY
-
-# Run migrations
-python manage.py migrate
-
-# Create superuser
-python manage.py createsuperuser
-
-# Create API token for pipeline
-python manage.py shell
->>> from django.contrib.auth.models import User
->>> from rest_framework.authtoken.models import Token
->>> user = User.objects.first()
->>> token = Token.objects.create(user=user)
->>> print(token.key)  # Copy this token for pipeline .env
-
-# Run development server
-python manage.py runserver
-```
-
-The Django backend will be available at `http://localhost:8000`
+**Note:** The backend is a separate service (not included in this repository). Configure the backend URL in the pipeline `.env` file.
 
 ### 2. Pipeline Setup (Conda Environment)
 
@@ -119,25 +91,6 @@ The pipeline will:
 
 ```
 .
-├── surveillance_backend/          # Django project
-│   ├── manage.py
-│   ├── surveillance_backend/       # Django settings
-│   │   ├── settings.py
-│   │   ├── urls.py
-│   │   └── wsgi.py
-│   ├── surveillance/                # Django app
-│   │   ├── models.py               # Camera, Alert models
-│   │   ├── views.py                # API views
-│   │   ├── serializers.py          # DRF serializers
-│   │   ├── admin.py                # Admin interface
-│   │   └── urls.py                 # URL routing
-│   ├── templates/                  # HTML templates
-│   │   └── surveillance/
-│   │       └── dashboard.html
-│   ├── media/                      # Uploaded images
-│   ├── staticfiles/                # Static files
-│   └── requirements.txt
-│
 ├── cctv/                           # Standalone pipeline
 │   ├── pipeline.py                 # Main pipeline script
 │   ├── config.py                   # Configuration loader
@@ -147,8 +100,15 @@ The pipeline will:
 │   ├── environment.yml             # Conda environment
 │   └── .env                        # Pipeline config
 │
+├── rtsp_pipeline.py                # RTSP stream processing pipeline
+├── threat_detector.py              # Backend-driven threat detection
+├── django_api.py                   # HTTP client for backend API
+├── detect_objects.py               # Object detection utilities
+├── requirements.txt                # Python dependencies
 └── README.md
 ```
+
+**Note:** This repository contains only the **pipeline code**. The Django backend is a separate service that runs independently and communicates with the pipeline via HTTP API.
 
 ## 🔌 API Endpoints
 
@@ -287,16 +247,6 @@ The pipeline detects the following alert types:
 
 ## ⚙️ Configuration
 
-### Django Settings
-
-Edit `surveillance_backend/.env`:
-
-```env
-DJANGO_SECRET_KEY=your-secret-key
-DEBUG=True
-ALLOWED_HOSTS=localhost,127.0.0.1
-```
-
 ### Pipeline Settings
 
 Edit `cctv/.env`:
@@ -332,10 +282,6 @@ Features:
 ### Running Tests
 
 ```bash
-# Django tests
-cd surveillance_backend
-python manage.py test
-
 # Pipeline tests (manual)
 cd cctv
 python -c "from detectors.model import ThreatDetector; print('OK')"
@@ -343,8 +289,7 @@ python -c "from detectors.model import ThreatDetector; print('OK')"
 
 ### Logging
 
-- **Django logs**: `surveillance_backend/logs/django.log`
-- **Pipeline logs**: `cctv/logs/pipeline.log`
+- **Pipeline logs**: `cctv/logs/pipeline.log` or `logs/rtsp_pipeline.log`
 
 ### Database
 
@@ -367,14 +312,6 @@ DATABASES = {
 ```
 
 ## 🚀 Production Deployment
-
-### Django
-
-1. Set `DEBUG=False` in `.env`
-2. Configure `ALLOWED_HOSTS`
-3. Use PostgreSQL database
-4. Set up static file serving
-5. Use Gunicorn + Nginx
 
 ### Pipeline
 
